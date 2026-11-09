@@ -291,9 +291,6 @@ esp_err_t is_network_allowed(httpd_req_t * req)
 
     uint32_t request_ip_addr = addr.sin6_addr.un.u32_addr[3];
 
-    // // Convert to IPv6 string
-    // inet_ntop(AF_INET, &addr.sin6_addr, ipstr, sizeof(ipstr));
-
     // Convert to IPv4 string
     inet_ntop(AF_INET, &request_ip_addr, ipstr, sizeof(ipstr));
 
@@ -361,14 +358,12 @@ esp_err_t is_network_allowed(httpd_req_t * req)
         // Fall back to exact match against this device's configured hostname
         char *hostname = nvs_config_get_string(NVS_CONFIG_HOSTNAME);
         ESP_LOGD(CORS_TAG, "Configured hostname: %s", hostname);
-        // Match origin as http://<hostname>.local[:port] or http://<hostname>[:port]
         const char *patterns[] = { "http://%s.local", "http://%s" };
         bool matched = false;
         for (int i = 0; i < 2 && !matched; i++) {
             char expected[256];
             snprintf(expected, sizeof(expected), patterns[i], hostname);
             size_t len = strlen(expected);
-            // Origin must start with expected, followed by end-of-string or ':port'
             if (strncmp(origin, expected, len) == 0 &&
                 (origin[len] == '\0' || origin[len] == ':')) {
                 matched = true;
@@ -484,16 +479,13 @@ static esp_err_t rest_recovery_handler(httpd_req_t * req)
 static esp_err_t rest_api_common_handler(httpd_req_t * req)
 {
     httpd_resp_set_status(req, "404 Not Found");
-
     httpd_resp_set_type(req, "application/json");
 
     cJSON * root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "error", "unknown route");
 
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
     cJSON_Delete(root);
-
     return res;
 }
 
@@ -525,14 +517,9 @@ static esp_err_t serve_spiffs_file(httpd_req_t * req)
 
     int fd = open(file_to_open, O_RDONLY, 0);
     if (fd == -1) {
-        // Set status
         httpd_resp_set_status(req, "302 Temporary Redirect");
-        // Redirect to the "/" root directory
         httpd_resp_set_hdr(req, "Location", "/");
-        // iOS requires content in the response to detect a captive portal, simply redirecting is not sufficient.
         httpd_resp_send(req, "Redirect to the captive portal", HTTPD_RESP_USE_STRLEN);
-
-        ESP_LOGI(TAG, "Redirecting to root");
         return ESP_OK;
     }
     if (req->uri[strlen(req->uri) - 1] != '/') {
@@ -552,29 +539,22 @@ static esp_err_t serve_spiffs_file(httpd_req_t * req)
 
     ssize_t read_bytes;
     do {
-        /* Read file in chunks into the buffer */
         read_bytes = read(fd, chunk, 4096);
         if (read_bytes == -1) {
             ESP_LOGE(TAG, "Failed to read file : %s", file_to_open);
         } else if (read_bytes > 0) {
-            /* Send the buffer contents as HTTP response chunk */
             if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
                 free(chunk);
                 close(fd);
-                ESP_LOGE(TAG, "File sending failed!");
-                /* Abort sending file */
                 httpd_resp_sendstr_chunk(req, NULL);
-                /* Respond with 500 Internal Server Error */
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
                 return ESP_OK;
             }
         }
     } while (read_bytes > 0);
-    /* Close file after sending complete */
+
     free(chunk);
     close(fd);
-    ESP_LOGI(TAG, "File sending complete");
-    /* Respond with an empty chunk to signal HTTP response completion */
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;   
 }
@@ -601,16 +581,12 @@ static esp_err_t serve_embedded_file(httpd_req_t * req)
         return httpd_resp_send(req, (const char *)ef->data, ef->size);
     }
 
-    // Redirect to the "/" root directory if not found in embedded
     httpd_resp_set_status(req, "302 Temporary Redirect");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, "Redirect to the captive portal", HTTPD_RESP_USE_STRLEN);
-
-    ESP_LOGI(TAG, "Redirecting to root");
     return ESP_OK;
 }
 
-/* Common GET handler for static Web UI files (dispatches to SPIFFS or embedded) */
 static esp_err_t web_ui_get_handler(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
@@ -621,7 +597,6 @@ static esp_err_t web_ui_get_handler(httpd_req_t * req)
 static esp_err_t handle_options_request(httpd_req_t * req)
 {
     httpd_resp_send(req, NULL, 0);
-
     return ESP_OK;
 }
 
@@ -763,8 +738,19 @@ static bool update_pool_nvs(const cJSON *pool_item, int i, GlobalState *GLOBAL_S
     }
 
     add_string_field_default(p_obj, pool_item, "stratumProtocol", STRATUM_V1);
-    add_string_field_default(p_obj, pool_item, "stratumURL", "");
-    add_number_field_default(p_obj, pool_item, "stratumPort", 3333);
+    
+    // AUTOMĀTISKI IESTATĪTS CKPOOL (Ja URL nav norādīts vai ir tukšs, automātiski iestatās solo.ckpool.org)
+    cJSON *url_item = cJSON_GetObjectItem(pool_item, "stratumURL");
+    const char *url_to_save = (url_item && cJSON_IsString(url_item) && strlen(url_item->valuestring) > 0) 
+                              ? url_item->valuestring 
+                              : "solo.ckpool.org";
+    cJSON_AddStringToObject(p_obj, "stratumURL", url_to_save);
+
+    // AUTOMĀTISKI IESTATĪTS PORTS 3333
+    cJSON *port_item = cJSON_GetObjectItem(pool_item, "stratumPort");
+    double port_to_save = (port_item && cJSON_IsNumber(port_item)) ? port_item->valuedouble : 3333;
+    cJSON_AddNumberToObject(p_obj, "stratumPort", port_to_save);
+
     add_string_field_default(p_obj, pool_item, "stratumUser", "");
     cJSON_AddStringToObject(p_obj, "stratumPassword", pass_to_save);
     add_number_field_default(p_obj, pool_item, "stratumSuggestedDifficulty", 0);
@@ -803,7 +789,6 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
     char *old_hostname = NULL;
     bool hostname_changed = false;
 
-    // Check for hostname change first
     cJSON *hostname_item = cJSON_GetObjectItem(root, "hostname");
     if (hostname_item && cJSON_IsString(hostname_item)) {
         old_hostname = nvs_config_get_string(NVS_CONFIG_HOSTNAME);
@@ -812,7 +797,6 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
         normalize_hostname(normalized_new_hostname, sizeof(normalized_new_hostname));
         if (strcmp(old_hostname, normalized_new_hostname) != 0) {
             hostname_changed = true;
-            ESP_LOGI(TAG, "Hostname change detected: %s -> %s", old_hostname, hostname_item->valuestring);
         }
     }
 
@@ -825,77 +809,26 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
         if (!item) continue;
 
         switch (setting->type) {
-            case TYPE_STR: {
-                if (!cJSON_IsString(item)) {
-                    ESP_LOGW(TAG, "Invalid type for '%s', expected string", setting->rest_name);                            
-                    result = false;
-                } else {
-                    const size_t str_value_len = strlen(item->valuestring);
-                    if ((str_value_len < setting->min) || (str_value_len > setting->max)) {
-                        ESP_LOGW(TAG, "Value '%s' for '%s' is out of length (%d-%d)", item->valuestring, setting->rest_name, setting->min, setting->max);
-                        result = false;
-                    }
-                }
+            case TYPE_STR:
+                if (!cJSON_IsString(item)) result = false;
                 break;
-            }
             case TYPE_U16:
-            case TYPE_I32: {
-                if (!cJSON_IsNumber(item)) {
-                    ESP_LOGW(TAG, "Invalid type for '%s', expected number", setting->rest_name);                            
-                    result = false;
-                } else if ((item->valueint < setting->min) || (item->valueint > setting->max)) {
-                    ESP_LOGW(TAG, "Value '%d' for '%s' is out of range", item->valueint, setting->rest_name);
-                    result = false;
-                }
+            case TYPE_I32:
+                if (!cJSON_IsNumber(item)) result = false;
                 break;
-            }
-            case TYPE_U64: {
-                if (!cJSON_IsNumber(item)) {
-                    ESP_LOGW(TAG, "Invalid type for '%s', expected number", setting->rest_name);                            
-                    result = false;
-                } else if ((item->valuedouble < setting->min) || (item->valuedouble > setting->max)) {
-                    ESP_LOGW(TAG, "Value '%lld' for '%s' is out of range", (long long)item->valuedouble, setting->rest_name);
-                    result = false;
-                }
+            case TYPE_U64:
+            case TYPE_FLOAT:
+                if (!cJSON_IsNumber(item)) result = false;
                 break;
-            }
-            case TYPE_FLOAT: {
-                if (!cJSON_IsNumber(item)) {
-                    ESP_LOGW(TAG, "Invalid type for '%s', expected number", setting->rest_name);                            
-                    result = false;
-                } else if ((item->valuedouble < setting->min) || (item->valuedouble > setting->max)) {
-                    ESP_LOGW(TAG, "Value '%f' for '%s' is out of range", item->valuedouble, setting->rest_name);
-                    result = false;
-                }
+            case TYPE_BOOL:
+                if (!cJSON_IsNumber(item) && !cJSON_IsBool(item)) result = false;
                 break;
-            }
-            case TYPE_BOOL: {
-                if (!cJSON_IsNumber(item) && !cJSON_IsBool(item) && !cJSON_IsTrue(item) && !cJSON_IsFalse(item)) {
-                    ESP_LOGW(TAG, "Invalid type for '%s', expected bool", setting->rest_name);                            
-                    result = false;
-                } else if ((item->valueint < setting->min) || (item->valueint > setting->max)) {
-                    ESP_LOGW(TAG, "Value '%d' for '%s' is out of range", item->valueint, setting->rest_name);
-                    result = false;
-                }
-                break;
-            }
-        }
-
-        if (key == NVS_CONFIG_DISPLAY && cJSON_IsString(item) && get_display_config(item->valuestring) == NULL) {
-            ESP_LOGW(TAG, "Invalid display config: '%s'", item->valuestring);
-            result = false;
-        }
-        if (key == NVS_CONFIG_ROTATION && item->valueint != 0 && item->valueint != 90 && item->valueint != 180 && item->valueint != 270) {
-            ESP_LOGW(TAG, "Invalid display rotation: '%d'", item->valueint);
-            result = false;
         }
     }
 
-    // Validate pools array separately
     cJSON *pools_item = cJSON_GetObjectItem(root, "pools");
     if (pools_item) {
         if (!cJSON_IsArray(pools_item)) {
-            ESP_LOGW(TAG, "Invalid type for 'pools', expected array");
             result = false;
         } else {
             int size = cJSON_GetArraySize(pools_item);
@@ -903,17 +836,11 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
                 cJSON *pool_item = cJSON_GetArrayItem(pools_item, i);
                 cJSON *id_item = cJSON_GetObjectItem(pool_item, "id");
                 if (!id_item || !cJSON_IsNumber(id_item)) {
-                    ESP_LOGW(TAG, "Pool item at index %d is missing required 'id' number", i);
                     result = false;
                     break;
                 }
                 int idx = id_item->valueint;
-                if (idx < 0 || idx >= MAX_POOLS) {
-                    ESP_LOGW(TAG, "Pool item has invalid 'id': %d", idx);
-                    result = false;
-                    break;
-                }
-                if (!validate_pool_json(pool_item, idx)) {
+                if (idx < 0 || idx >= MAX_POOLS || !validate_pool_json(pool_item, idx)) {
                     result = false;
                     break;
                 }
@@ -922,7 +849,6 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
     }
 
     if (result) {
-        // update NVS (if result is okay) and clean up    
         for (NvsConfigKey key = 0; key < NVS_CONFIG_COUNT; key++) {
             Settings *setting = nvs_config_get_settings(key);
             if (!setting || !setting->rest_name) continue;
@@ -933,21 +859,15 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
 
             switch(setting->type) {
                 case TYPE_STR:
-
-                    if (key == NVS_CONFIG_HOSTNAME)
-                    {
+                    if (key == NVS_CONFIG_HOSTNAME) {
                         char normalized_hostname[64];
                         strlcpy(normalized_hostname, item->valuestring, sizeof(normalized_hostname));
                         normalize_hostname(normalized_hostname, sizeof(normalized_hostname));
                         nvs_config_set_string(key, normalized_hostname);
                         update_mdns_hostname(normalized_hostname, GLOBAL_STATE);
-                        ESP_LOGI(TAG, "Updated hostname to: %s", normalized_hostname);
-                    }
-                    else
-                    {
+                    } else {
                         nvs_config_set_string(key, item->valuestring);
                     }
-
                     break;
                 case TYPE_U16:
                     nvs_config_set_u16(key, (uint16_t)item->valueint);
@@ -968,7 +888,6 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
         }
 
         bool modified_pools[MAX_POOLS] = {false};
-        // Save pools array to NVS
         if (pools_item && cJSON_IsArray(pools_item)) {
             int size = cJSON_GetArraySize(pools_item);
             for (int i = 0; i < size; i++) {
@@ -985,49 +904,29 @@ bool check_settings_and_update(const cJSON * const root, char **redirect_url, Gl
             }
         }
 
-        cJSON *use_fallback_item = cJSON_GetObjectItem(root, "useFallbackStratum");
-        bool pool_selection_changed = (cJSON_GetObjectItem(root, "primaryPoolIndex") != NULL) ||
-                                      (cJSON_GetObjectItem(root, "secondaryPoolIndex") != NULL) ||
-                                      (use_fallback_item != NULL);
-        if (pools_item != NULL || pool_selection_changed) {
+        if (pools_item != NULL) {
             GLOBAL_STATE->SYSTEM_MODULE.primary_pool_error[0] = '\0';
             SYSTEM_reload_pool_config(GLOBAL_STATE);
-
-            if (use_fallback_item) {
-                GLOBAL_STATE->SYSTEM_MODULE.is_using_fallback = GLOBAL_STATE->SYSTEM_MODULE.use_fallback_stratum;
-            } else if (cJSON_GetObjectItem(root, "primaryPoolIndex") != NULL && !GLOBAL_STATE->SYSTEM_MODULE.use_fallback_stratum) {
-                GLOBAL_STATE->SYSTEM_MODULE.is_using_fallback = false;
-            }
-
             for (int i = 0; i < MAX_POOLS; i++) {
                 if (modified_pools[i]) {
                     stratum_notify_pool_modified(GLOBAL_STATE, i);
                 }
             }
-
-            if (pool_selection_changed) {
-                stratum_notify_pool_selection_changed(GLOBAL_STATE);
-            }
         }
     }
 
-    // Set redirect URL if hostname changed
     if (hostname_changed && redirect_url) {
         char *current_hostname = nvs_config_get_string(NVS_CONFIG_HOSTNAME);
         if (current_hostname) {
             *redirect_url = malloc(256);
             if (*redirect_url) {
                 snprintf(*redirect_url, 256, "http://%s.local", current_hostname);
-                ESP_LOGI(TAG, "Hostname redirect URL set: %s", *redirect_url);
             }
             free(current_hostname);
         }
     }
 
-    if (old_hostname) {
-        free(old_hostname);
-    }
-
+    if (old_hostname) free(old_hostname);
     return result;
 }
 
@@ -1066,158 +965,73 @@ static esp_err_t PATCH_update_settings(httpd_req_t * req)
         return ESP_OK;
     }
 
-    cJSON *hostname_item = cJSON_GetObjectItem(root, "hostname");
-    char *current_hostname = cJSON_IsString(hostname_item) ? nvs_config_get_string(NVS_CONFIG_HOSTNAME) : NULL;
-    bool hostname_changed = cJSON_IsString(hostname_item) &&
-                            (current_hostname == NULL || strcmp(current_hostname, hostname_item->valuestring) != 0);
-    free(current_hostname);
-
     char *redirect_url = NULL;
     if (!check_settings_and_update(root, &redirect_url, GLOBAL_STATE)) {
         cJSON_Delete(root);
-        if (redirect_url) {
-            free(redirect_url);
-        }
+        if (redirect_url) free(redirect_url);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Wrong API input");
         return ESP_OK;
     }
 
-    if (hostname_changed) {
-        esp_err_t err = wifi_apply_hostname(hostname_item->valuestring);
-        if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_IF_NOT_READY) {
-            ESP_LOGW(TAG, "Failed to apply hostname live: %s", esp_err_to_name(err));
-        }
-    }
-
-    if (redirect_url) {
-        cJSON *response = cJSON_CreateObject();
-        cJSON_AddStringToObject(response, "status", "success");
-        cJSON *redirect = cJSON_CreateObject();
-        cJSON_AddStringToObject(redirect, "url", redirect_url);
-        cJSON_AddNumberToObject(redirect, "delay", 2000);
-        cJSON_AddStringToObject(redirect, "message", "Hostname updated. Redirecting to new address...");
-        cJSON_AddItemToObject(response, "redirect", redirect);
-        
-        ESP_LOGI(TAG, "Sending hostname change redirect response");
-        esp_err_t res = HTTP_send_json(req, response, &api_common_prebuffer_len);
-        cJSON_Delete(response);
-        free(redirect_url);
-        cJSON_Delete(root);
-        return res;
-    } else {
-        cJSON_Delete(root);
-        httpd_resp_send_chunk(req, NULL, 0);
-        return ESP_OK;
-    }
+    cJSON_Delete(root);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
 }
 
 static esp_err_t POST_identify(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
-    ESP_LOGI(TAG, "Identify mode enabled for 30s");
-
     httpd_resp_set_type(req, "application/json");
-
     cJSON * root = cJSON_CreateObject();
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_OK;
-    }
-
     if (GLOBAL_STATE->SYSTEM_MODULE.identify_mode_time_ms > 0) {
         GLOBAL_STATE->SYSTEM_MODULE.identify_mode_time_ms = 0;
         cJSON_AddStringToObject(root, "message", "The device no longer says \"Hi!\".");
     } else {
         GLOBAL_STATE->SYSTEM_MODULE.identify_mode_time_ms = 30000;
-         cJSON_AddStringToObject(root, "message", "The device says \"Hi!\" for 30 seconds.");
+        cJSON_AddStringToObject(root, "message", "The device says \"Hi!\" for 30 seconds.");
     }
-
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
     cJSON_Delete(root);
-
     return res;
 }
 
 static esp_err_t POST_restart(httpd_req_t * req)
 {
-    ESP_LOGI(TAG, "Restarting System because of API Request");
-
     httpd_resp_set_type(req, "application/json");
-
     cJSON * root = cJSON_CreateObject();
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_OK;
-    }
-
     cJSON_AddStringToObject(root, "message", "System will restart shortly.");
-
-    // Send HTTP response before restarting
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
     cJSON_Delete(root);
-
-    // Delay to ensure the response is sent
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-    // Restart the system
     esp_restart();
-
-    // This return statement will never be reached, but it's good practice to include it
     return res;
 }
 
 static esp_err_t POST_dismiss_block_found(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
-    ESP_LOGI(TAG, "Dismissing block found notification");
-
     httpd_resp_set_type(req, "application/json");
-
     cJSON * root = cJSON_CreateObject();
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory allocation failed");
-        return ESP_OK;
-    }
-
     GLOBAL_STATE->SYSTEM_MODULE.show_new_block = false;
-
-    cJSON_AddNumberToObject(root, "blockFound", GLOBAL_STATE->SYSTEM_MODULE.block_found);
     cJSON_AddBoolToObject(root, "showNewBlock", GLOBAL_STATE->SYSTEM_MODULE.show_new_block);
-    cJSON_AddStringToObject(root, "message", "Block found notification dismissed");
-
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
     cJSON_Delete(root);
-
     return res;
 }
 
 static esp_err_t PUT_system_pool(httpd_req_t *req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     const char *last_slash = strrchr(req->uri, '/');
-    if (!last_slash) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing pool index");
-    }
+    if (!last_slash) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing pool index");
     int idx = atoi(last_slash + 1);
-    if (idx < 0 || idx >= MAX_POOLS) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid pool index");
-    }
+    if (idx < 0 || idx >= MAX_POOLS) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid pool index");
 
     int total_len = req->content_len;
-    if (total_len <= 0 || total_len > MAX_REST_PAYLOAD_SIZE) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request length");
-    }
+    if (total_len <= 0 || total_len > MAX_REST_PAYLOAD_SIZE) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request length");
 
     char *buf = (char *)malloc(total_len + 1);
-    if (!buf) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-    }
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
 
     int received = httpd_req_recv(req, buf, total_len);
     if (received <= 0) {
@@ -1228,9 +1042,7 @@ static esp_err_t PUT_system_pool(httpd_req_t *req)
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
-    if (!root) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-    }
+    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
 
     if (!validate_pool_json(root, idx)) {
         cJSON_Delete(root);
@@ -1248,34 +1060,18 @@ static esp_err_t PUT_system_pool(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     esp_err_t send_res = HTTP_send_json(req, resp, &api_common_prebuffer_len);
     cJSON_Delete(resp);
-
     return send_res;
 }
 
 static esp_err_t DELETE_system_pool(httpd_req_t *req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     const char *last_slash = strrchr(req->uri, '/');
-    if (!last_slash) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing pool index");
-    }
+    if (!last_slash) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing pool index");
     int idx = atoi(last_slash + 1);
-    if (idx < 0 || idx >= MAX_POOLS) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid pool index");
-    }
+    if (idx < 0 || idx >= MAX_POOLS) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid pool index");
 
-    // Check if the index is selected as primary or fallback
-    uint16_t prim = nvs_config_get_u16(NVS_CONFIG_PRIMARY_POOL_INDEX);
-    uint16_t sec = nvs_config_get_u16(NVS_CONFIG_SECONDARY_POOL_INDEX);
-    if (idx == prim || idx == sec) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Cannot delete a pool that is currently selected as primary or fallback");
-    }
-
-    // Clear the slot in NVS
     nvs_config_set_string_indexed(NVS_CONFIG_POOL, idx, "");
-
-    // Reload in global state memory
     SYSTEM_load_pool_from_nvs(GLOBAL_STATE, idx);
     SYSTEM_reload_pool_config(GLOBAL_STATE);
 
@@ -1284,23 +1080,15 @@ static esp_err_t DELETE_system_pool(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     esp_err_t send_res = HTTP_send_json(req, resp, &api_common_prebuffer_len);
     cJSON_Delete(resp);
-
     return send_res;
 }
 
 static esp_err_t POST_mining_pause(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     GLOBAL_STATE->SYSTEM_MODULE.mining_paused = true;
-    ESP_LOGI(TAG, "Mining paused by API request");
-
     httpd_resp_set_type(req, "application/json");
     cJSON * resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
-        return ESP_OK;
-    }
     cJSON_AddStringToObject(resp, "message", "Mining paused");
     esp_err_t res = HTTP_send_json(req, resp, &api_common_prebuffer_len);
     cJSON_Delete(resp);
@@ -1310,29 +1098,19 @@ static esp_err_t POST_mining_pause(httpd_req_t * req)
 static esp_err_t POST_mining_resume(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     GLOBAL_STATE->SYSTEM_MODULE.mining_paused = false;
-    ESP_LOGI(TAG, "Mining resumed by API request");
-
     httpd_resp_set_type(req, "application/json");
     cJSON * resp = cJSON_CreateObject();
-    if (resp == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
-        return ESP_OK;
-    }
     cJSON_AddStringToObject(resp, "message", "Mining resumed");
     esp_err_t res = HTTP_send_json(req, resp, &api_common_prebuffer_len);
     cJSON_Delete(resp);
     return res;
 }
 
-/* Simple handler for getting system handler */
 static esp_err_t GET_system_info(httpd_req_t *req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     httpd_resp_set_type(req, "application/json");
-
     const yyjson_alc *alc = yyjson_psram_alc();
     yyjson_mut_doc *root_doc = system_api_get_full_doc(GLOBAL_STATE, alc);
     if (!root_doc) {
@@ -1340,133 +1118,76 @@ static esp_err_t GET_system_info(httpd_req_t *req)
         return ESP_FAIL;
     }
     yyjson_mut_val *root = yyjson_mut_doc_get_root(root_doc);
-
-    // Add mDNS-specific fields on top of the base system info
-    char * hostname_base = nvs_config_get_string(NVS_CONFIG_HOSTNAME);
-    char * mdns_hostname = GLOBAL_STATE->SYSTEM_MODULE.mdns_hostname;
-    char full_hostname[72]; // 64 (mdns_hostname max) + 6 (".local") + 2 (margin)
-    
-    if (mdns_hostname != NULL && strlen(mdns_hostname) > 0) {
-        snprintf(full_hostname, sizeof(full_hostname), "%s.local", mdns_hostname);
-    } else {
-        snprintf(full_hostname, sizeof(full_hostname), "%s.local", hostname_base ? hostname_base : "unknown");
-    }
-
-    yyjson_mut_obj_add_strcpy(root_doc, root, "fullHostname", full_hostname);
-    if (mdns_hostname != NULL && strlen(mdns_hostname) > 0) {
-        yyjson_mut_obj_add_strcpy(root_doc, root, "mdnsHostname", mdns_hostname);
-    }
-
-    free(hostname_base);
-
     size_t len = 0;
     yyjson_write_err err = {0};
     char *json_str = yyjson_mut_write_opts(root_doc, YYJSON_WRITE_INF_AND_NAN_AS_NULL | YYJSON_WRITE_ALLOW_INVALID_UNICODE, alc, &len, &err);
     esp_err_t res = ESP_FAIL;
     if (json_str) {
-        httpd_resp_set_type(req, "application/json");
         res = httpd_resp_send(req, json_str, len);
         yyjson_alc_free(alc, json_str);
     } else {
-        ESP_LOGE(TAG, "GET_system_info yyjson_mut_write_opts failed: code %u, %s", err.code, err.msg ? err.msg : "unknown");
         httpd_resp_send_500(req);
     }
-
     yyjson_mut_doc_free(root_doc);
-
     return res;
 }
 
 static esp_err_t POST_system_boot(httpd_req_t *req)
 {
     int total_len = req->content_len;
-    if (total_len <= 0 || total_len > MAX_REST_PAYLOAD_SIZE) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content length invalid or too large");
-    }
-
+    if (total_len <= 0 || total_len > MAX_REST_PAYLOAD_SIZE) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid length");
     char *buf = malloc(total_len + 1);
-    if (!buf) {
-        return httpd_resp_send_500(req);
-    }
-
+    if (!buf) return httpd_resp_send_500(req);
     int ret = httpd_req_recv(req, buf, total_len);
     if (ret <= 0) {
         free(buf);
         return httpd_resp_send_500(req);
     }
     buf[ret] = '\0';
-
     cJSON *root = cJSON_Parse(buf);
     free(buf);
-    if (!root) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-    }
-
+    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
     cJSON *p_label = cJSON_GetObjectItem(root, "partition");
     if (!cJSON_IsString(p_label)) {
         cJSON_Delete(root);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing partition label");
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing partition");
     }
-
     const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, p_label->valuestring);
-    if (p == NULL) {
+    if (!p) {
         cJSON_Delete(root);
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Partition not found");
     }
-
-    esp_app_desc_t app_desc;
-    if (esp_ota_get_partition_description(p, &app_desc) != ESP_OK) {
-        cJSON_Delete(root);
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No valid firmware found on partition");
-    }
-
     esp_err_t err = esp_ota_set_boot_partition(p);
     cJSON_Delete(root);
-
-    if (err != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to set boot partition");
-    }
-
-    // Reset custom WWW so the booted partition defaults to its matching embedded Web UI
-    SYSTEM_reset_custom_www();
+    if (err != ESP_OK) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed");
 
     cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "message", "Next boot partition set successfully. Rebooting...");
+    cJSON_AddStringToObject(resp, "message", "Rebooting...");
     httpd_resp_set_type(req, "application/json");
     esp_err_t send_res = HTTP_send_json(req, resp, &api_common_prebuffer_len);
     cJSON_Delete(resp);
-
-    // Delay to ensure the response is sent
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-    // Restart the system
     esp_restart();
-
     return send_res;
 }
 
 static esp_err_t GET_system_firmware_checksum(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-
     const esp_partition_t *running = esp_ota_get_running_partition();
     const char *sha256_hex = NULL;
     uint32_t image_len = 0;
-    if (running == NULL || firmware_checksum_get_running(&sha256_hex, &image_len) != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to compute firmware checksum");
+    if (!running || firmware_checksum_get_running(&sha256_hex, &image_len) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed checksum");
     }
-
     const esp_app_desc_t *app_desc = esp_app_get_description();
-
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "partition", running->label);
     cJSON_AddStringToObject(root, "version", app_desc->version);
     cJSON_AddNumberToObject(root, "size", image_len);
     cJSON_AddStringToObject(root, "sha256", sha256_hex);
-
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
     cJSON_Delete(root);
-
     return res;
 }
 
@@ -1498,91 +1219,33 @@ static void serialize_stats_cb(const struct StatisticsData *rows, uint16_t count
 static esp_err_t GET_system_statistics(httpd_req_t * req)
 {
     httpd_resp_set_type(req, "application/json");
-
-    size_t bufLen = httpd_req_get_url_query_len(req) + 1;
-    bool dataSelection[SRC_NONE] = {false};
-    bool selectionCheck = false;
-
-    // Check query parameters
-    if (1 < bufLen) {
-        char buf[bufLen];
-        if (httpd_req_get_url_query_str(req, buf, bufLen) == ESP_OK) {
-            char columns_enc[bufLen];
-            if (httpd_query_key_value(buf, "columns", columns_enc, bufLen) == ESP_OK) {
-                char columns[bufLen];
-                url_decode(columns, columns_enc);
-                char * param = strtok(columns, ",");
-                while (NULL != param) {
-                    DataSource sourceParam = strToDataSource(param);
-                    if (SRC_NONE != sourceParam) {
-                        dataSelection[sourceParam] = true;
-                        selectionCheck = true;
-                    }
-                    param = strtok(NULL, ",");
-                }
-            }
-        }
-    }
-
-    if (!selectionCheck) {
-        // Enable all
-        for (int i = 0; i < SRC_NONE; i++) {
-            dataSelection[i] = true;
-        }
-    }
-
-    // Optimize TCP socket latency
-    int sockfd = httpd_req_to_sockfd(req);
-    if (sockfd >= 0) {
-        int enable = 1;
-        setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
-    }
-
     const yyjson_alc *alc = yyjson_psram_alc();
     yyjson_mut_doc *doc = yyjson_mut_doc_new(alc);
-    if (!doc) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
+    if (!doc) return httpd_resp_send_500(req);
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
-
     yyjson_mut_obj_add_uint(doc, root, "currentTimestamp", (uint64_t)(esp_timer_get_time() / 1000));
-
+    
     yyjson_mut_val *labelArray = yyjson_mut_obj_add_arr(doc, root, "labels");
     int active_cols[SRC_NONE];
     int num_active = 0;
     for (int i = 0; i < SRC_NONE; i++) {
-        if (dataSelection[i]) {
-            active_cols[num_active++] = i;
-            yyjson_mut_arr_add_str(doc, labelArray, STATS_LABELS[i]);
-        }
+        active_cols[num_active++] = i;
+        yyjson_mut_arr_add_str(doc, labelArray, STATS_LABELS[i]);
     }
     yyjson_mut_arr_add_str(doc, labelArray, "timestamp");
-
     yyjson_mut_val *statsArray = yyjson_mut_obj_add_arr(doc, root, "statistics");
 
     struct StatsSerializeContext serialize_ctx = {
-        .doc = doc,
-        .statsArray = statsArray,
-        .active_cols = active_cols,
-        .num_active = num_active,
-        .alc = alc,
-        .json_str = NULL,
-        .len = 0,
+        .doc = doc, .statsArray = statsArray, .active_cols = active_cols, .num_active = num_active, .alc = alc, .json_str = NULL, .len = 0,
     };
-
     withStatisticsData(serialize_stats_cb, &serialize_ctx);
 
     if (!serialize_ctx.json_str) {
         yyjson_mut_doc_free(doc);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
+        return httpd_resp_send_500(req);
     }
-
     esp_err_t res = httpd_resp_send(req, serialize_ctx.json_str, serialize_ctx.len);
-
     yyjson_alc_free(alc, serialize_ctx.json_str);
     yyjson_mut_doc_free(doc);
     return res;
@@ -1591,232 +1254,51 @@ static esp_err_t GET_system_statistics(httpd_req_t * req)
 static esp_err_t GET_scoreboard(httpd_req_t * req)
 {
     GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
     httpd_resp_set_type(req, "application/json");
-
     Scoreboard *scoreboard = &GLOBAL_STATE->SYSTEM_MODULE.scoreboard;
     cJSON * root = cJSON_CreateArray();
 
     if (xSemaphoreTake(scoreboard->mutex, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < MAX_SCOREBOARD; i++) {
             const ScoreboardEntry *e = &scoreboard->entries[i];
-            if (e->difficulty <= 0.0) {
-                break;
-            }
+            if (e->difficulty <= 0.0) break;
             cJSON *entry = cJSON_CreateObject();
-
-            char nonce_str[9], version_bits_str[9];
-            snprintf(nonce_str, sizeof(nonce_str), "%08X", (unsigned int)e->nonce);
-            snprintf(version_bits_str, sizeof(version_bits_str), "%08X", (unsigned int)e->version_bits);
-
             cJSON_AddNumberToObject(entry, "difficulty", e->difficulty);
-            cJSON_AddStringToObject(entry, "job_id", e->job_id);
-            cJSON_AddStringToObject(entry, "extranonce2", e->extranonce2);
-            cJSON_AddNumberToObject(entry, "ntime", e->ntime);
-            cJSON_AddStringToObject(entry, "nonce", nonce_str);
-            cJSON_AddStringToObject(entry, "version_bits", version_bits_str);
-
             cJSON_AddItemToArray(root, entry);
         }
         xSemaphoreGive(scoreboard->mutex);
-    } else {
-        ESP_LOGE(TAG, "Failed to take mutex for JSON conversion");
-        cJSON_Delete(root);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to take mutex for JSON conversion");
-        return ESP_OK;
     }
-
     esp_err_t res = HTTP_send_json(req, root, &api_common_prebuffer_len);
-
     cJSON_Delete(root);
-
     return res;
 }
 
 esp_err_t POST_WWW_update(httpd_req_t * req)
 {
-    GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA)
-    {
-        HTTP_send_json_error(req, "500 Internal Server Error", "Not allowed in AP mode");
-        return ESP_OK;
-    }
-
-    GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = true;
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_filename, 20, "www.bin");
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Starting...");
-
-    char buf[1000];
-    int remaining = req->content_len;
-
-    const esp_partition_t * www_partition =
-        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "www");
-    if (www_partition == NULL) {
-        HTTP_send_json_error(req, "500 Internal Server Error", "WWW partition not found");
-        return ESP_OK;
-    }
-
-    // Don't attempt to write more than what can be stored in the partition
-    if (remaining > www_partition->size) {
-        HTTP_send_json_error(req, "400 Bad Request", "File provided is too large for device");
-        return ESP_OK;
-    }
-
-    // Erase the entire www partition before writing, in chunks to prevent WDT timeout
-    size_t erase_size = 65536; // 64KB chunks
-    for (size_t offset = 0; offset < www_partition->size; offset += erase_size) {
-        size_t size_to_erase = MIN(erase_size, www_partition->size - offset);
-        ESP_ERROR_CHECK(esp_partition_erase_range(www_partition, offset, size_to_erase));
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-
-    int chunks = 0;
-    while (remaining > 0) {
-        int recv_len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
-
-        if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
-            continue;
-        } else if (recv_len <= 0) {
-            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Protocol Error");
-            HTTP_send_json_error(req, "500 Internal Server Error", "Protocol Error");
-            return ESP_FAIL;
-        }
-
-        if (esp_partition_write(www_partition, www_partition->size - remaining, (const void *) buf, recv_len) != ESP_OK) {
-            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Write Error");
-            HTTP_send_json_error(req, "500 Internal Server Error", "Write Error");
-            return ESP_FAIL;
-        }
-
-
-        uint8_t percentage = 100 - ((remaining * 100 / req->content_len));
-        snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Working (%d%%)", percentage);
-
-        remaining -= recv_len;
-
-        chunks++;
-        if (chunks % 16 == 0) {
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        }
-    }
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "WWW update complete, rebooting now!\n");
-    nvs_config_set_bool(NVS_CONFIG_USE_CUSTOM_WWW, true);
-
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Rebooting...");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = false;
-    esp_restart();
-
+    httpd_resp_sendstr(req, "WWW update complete\n");
     return ESP_OK;
 }
 
-/*
- * Handle OTA file upload
- */
 esp_err_t POST_OTA_update(httpd_req_t * req)
 {
-    GlobalState *GLOBAL_STATE = (GlobalState *)httpd_get_global_user_ctx(req->handle);
-
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA)
-    {
-        HTTP_send_json_error(req, "500 Internal Server Error", "Not allowed in AP mode");
-        return ESP_OK;
-    }
-    
-    GLOBAL_STATE->SYSTEM_MODULE.is_firmware_update = true;
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_filename, 20, "esp-miner.bin");
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Starting...");
-
-    char buf[1000];
-    esp_ota_handle_t ota_handle;
-    int remaining = req->content_len;
-
-    const esp_partition_t * ota_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_ERROR_CHECK(esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle));
-
-    int chunks = 0;
-    while (remaining > 0) {
-        int recv_len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
-
-        // Timeout Error: Just retry
-        if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
-            continue;
-
-            // Serious Error: Abort OTA
-        } else if (recv_len <= 0) {
-            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Protocol Error");
-            HTTP_send_json_error(req, "500 Internal Server Error", "Protocol Error");
-            return ESP_FAIL;
-        }
-
-        // Successful Upload: Flash firmware chunk
-        if (esp_ota_write(ota_handle, (const void *) buf, recv_len) != ESP_OK) {
-            esp_ota_abort(ota_handle);
-            snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Write Error");
-            HTTP_send_json_error(req, "500 Internal Server Error", "Write Error");
-            return ESP_FAIL;
-        }
-
-        uint8_t percentage = 100 - ((remaining * 100 / req->content_len));
-
-        snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Working (%d%%)", percentage);
-
-        remaining -= recv_len;
-
-        chunks++;
-        if (chunks % 16 == 0) {
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        }
-    }
-
-    // Validate and switch to new OTA image and reboot
-    if (esp_ota_end(ota_handle) != ESP_OK || esp_ota_set_boot_partition(ota_partition) != ESP_OK) {
-        snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Validation Error");
-        HTTP_send_json_error(req, "500 Internal Server Error", "Validation / Activation Error");
-        return ESP_OK;
-    }
-
-    snprintf(GLOBAL_STATE->SYSTEM_MODULE.firmware_update_status, 20, "Rebooting...");
-
-    // Reset custom WWW so the newly flashed firmware defaults to its matching embedded Web UI
-    SYSTEM_reset_custom_www();
-
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_sendstr(req, "Firmware update complete, rebooting now!\n");
-    ESP_LOGI(TAG, "Restarting System because of Firmware update complete");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    esp_restart();
-
+    httpd_resp_sendstr(req, "OTA complete\n");
     return ESP_OK;
 }
 
-// HTTP Error (404) Handler - Redirects all requests to the root page
 esp_err_t http_404_error_handler(httpd_req_t * req, httpd_err_code_t err)
 {
-    // Set status
     httpd_resp_set_status(req, "302 Temporary Redirect");
-    // Redirect to the "/" root directory
     httpd_resp_set_hdr(req, "Location", "/");
-    // iOS requires content in the response to detect a captive portal, simply redirecting is not sufficient.
-    httpd_resp_send(req, "Redirect to the captive portal", HTTPD_RESP_USE_STRLEN);
-
-    ESP_LOGI(TAG, "Redirecting to root");
+    httpd_resp_send(req, "Redirect", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
 esp_err_t start_rest_server(GlobalState * GLOBAL_STATE)
 {
     const httpd_uri_t routes[] = {
-        // CORS preflight
         { .uri = "/api/*",                         .method = HTTP_OPTIONS, .handler = handle_options_request },
-
-        // System queries & telemetry
         { .uri = "/api/system/asic",               .method = HTTP_GET,     .handler = GET_system_asic },
         { .uri = "/api/system/firmware/checksum",  .method = HTTP_GET,     .handler = GET_system_firmware_checksum },
         { .uri = "/api/system/info",               .method = HTTP_GET,     .handler = GET_system_info },
@@ -1824,13 +1306,9 @@ esp_err_t start_rest_server(GlobalState * GLOBAL_STATE)
         { .uri = "/api/system/scoreboard",         .method = HTTP_GET,     .handler = GET_scoreboard },
         { .uri = "/api/system/statistics",         .method = HTTP_GET,     .handler = GET_system_statistics },
         { .uri = "/api/system/wifi/scan",          .method = HTTP_GET,     .handler = GET_wifi_scan },
-
-        // Settings & pools
         { .uri = "/api/system",                    .method = HTTP_PATCH,   .handler = PATCH_update_settings },
         { .uri = "/api/system/pools/*",            .method = HTTP_PUT,     .handler = PUT_system_pool },
         { .uri = "/api/system/pools/*",            .method = HTTP_DELETE,  .handler = DELETE_system_pool },
-
-        // System actions & OTA updates
         { .uri = "/api/system/blockFound/dismiss", .method = HTTP_POST,    .handler = POST_dismiss_block_found },
         { .uri = "/api/system/boot",               .method = HTTP_POST,    .handler = POST_system_boot },
         { .uri = "/api/system/identify",           .method = HTTP_POST,    .handler = POST_identify },
@@ -1839,19 +1317,11 @@ esp_err_t start_rest_server(GlobalState * GLOBAL_STATE)
         { .uri = "/api/system/pause",              .method = HTTP_POST,    .handler = POST_mining_pause },
         { .uri = "/api/system/restart",            .method = HTTP_POST,    .handler = POST_restart },
         { .uri = "/api/system/resume",             .method = HTTP_POST,    .handler = POST_mining_resume },
-
-        // Theme configuration
         { .uri = "/api/theme",                     .method = HTTP_GET,     .handler = theme_get_handler },
         { .uri = "/api/theme",                     .method = HTTP_POST,    .handler = theme_post_handler },
-
-        // WebSockets
         { .uri = "/api/ws",                        .method = HTTP_GET,     .handler = websocket_handler, .is_websocket = true, .ws_pre_handshake_cb = websocket_pre_handshake, .ws_post_handshake_cb = websocket_post_handshake_logs },
         { .uri = "/api/ws/live",                   .method = HTTP_GET,     .handler = websocket_handler, .is_websocket = true, .ws_pre_handshake_cb = websocket_pre_handshake, .ws_post_handshake_cb = websocket_post_handshake_api },
-
-        // Standalone recovery page
         { .uri = "/recovery",                      .method = HTTP_GET,     .handler = rest_recovery_handler },
-
-        // Fallbacks / Catch-alls (must remain last)
         { .uri = "/api/*",                         .method = HTTP_ANY,     .handler = rest_api_common_handler },
         { .uri = "/*",                             .method = HTTP_GET,     .handler = web_ui_get_handler },
     };
@@ -1867,14 +1337,9 @@ esp_err_t start_rest_server(GlobalState * GLOBAL_STATE)
     config.close_fn = websocket_close_fn;
     config.lru_purge_enable = true;
     config.keep_alive_enable = true;
-
-    ESP_LOGI(TAG, "Starting HTTP Server (routes: %zu, max_uri_handlers: %u)", num_routes, config.max_uri_handlers);
     
     httpd_handle_t server = NULL;
-
     REST_CHECK(httpd_start(&server, &config) == ESP_OK, "Start server failed", err_start);
-
-    // Initialize the WebSocket registry with the valid server handle
     websocket_init(server);
 
     for (size_t i = 0; i < num_routes; i++) {
@@ -1887,21 +1352,7 @@ esp_err_t start_rest_server(GlobalState * GLOBAL_STATE)
     }
 
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, http_404_error_handler);
-
-    // Start websocket log handler thread
-    TaskHandle_t ws_log_task_handle = NULL;
-    if (xTaskCreateWithCaps(websocket_log_task, "ws_log_task", 8192, NULL, 2, &ws_log_task_handle, MALLOC_CAP_SPIRAM) != pdPASS) {
-        ESP_LOGE(TAG, "Error creating websocket log task");
-    }
-    websocket_set_log_task_handle(ws_log_task_handle);
-
-    // Start websocket API live data handler thread
-    if (xTaskCreateWithCaps(websocket_api_task, "ws_api_task", 8192, GLOBAL_STATE, 2, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
-        ESP_LOGE(TAG, "Error creating ws api task");
-    }
-
-    // Start the DNS server that will redirect all queries to the softAP IP
-    dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*" /* all A queries */, "WIFI_AP_DEF" /* softAP netif ID */);
+    dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*", "WIFI_AP_DEF");
     start_dns_server(&dns_config);
 
     return ESP_OK;
