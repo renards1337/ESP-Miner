@@ -31,15 +31,11 @@ jobs:
         python-version: '3.10'
         cache: 'pip'
     - run: pip install esptool
-    - name: Run merge script
+    - name: "Create factory/merged image with config"
       run: |
-        chmod +x merge_bin.sh
-        ./merge_bin.sh || true
-    - name: Manual Fallback Merge (if script fails)
-      run: |
-        if [ ! -f ./esp-miner-merged.bin ]; then
-          python -m esptool --chip esp32s3 merge_bin -o esp-miner-merged.bin --flash_mode dio --flash_size 16MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/esp-miner.bin
-        fi
+        # Ja config.bin neeksistē, bet ir config-601.csv, mēs varam to izmantot vai izveidot tukšu NVS partīciju,
+        # taču drošākais ceļš ir izsaukt merge skriptu ar -c karodziņu un norādīt esptool tieši ar config failu
+        python -m esptool --chip esp32s3 merge_bin -o esp-miner-merged.bin --flash_mode dio --flash_size 16MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/esp-miner.bin
     - name: upload esp-miner-merged.bin
       uses: actions/upload-artifact@v4
       with:
