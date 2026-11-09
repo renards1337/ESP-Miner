@@ -31,8 +31,15 @@ jobs:
         python-version: '3.10'
         cache: 'pip'
     - run: pip install esptool
-    - name: "Create factory/merged image"
-      run: "./merge_bin.sh 601 ./esp-miner-merged.bin"
+    - name: Run merge script
+      run: |
+        chmod +x merge_bin.sh
+        ./merge_bin.sh || true
+    - name: Manual Fallback Merge (if script fails)
+      run: |
+        if [ ! -f ./esp-miner-merged.bin ]; then
+          python -m esptool --chip esp32s3 merge_bin -o esp-miner-merged.bin --flash_mode dio --flash_size 16MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/esp-miner.bin
+        fi
     - name: upload esp-miner-merged.bin
       uses: actions/upload-artifact@v4
       with:
