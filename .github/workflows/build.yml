@@ -24,7 +24,7 @@ jobs:
       with:
         esp_idf_version: v6.0.3
         target: esp32s3
-        command: GITHUB_ACTIONS="true" idf.py -DSDKCONFIG_DEFAULTS="configs/gamma_v601.defaults" build
+        command: GITHUB_ACTIONS="true" idf.py build
         path: '.'
     - uses: actions/setup-python@v6
       with:
